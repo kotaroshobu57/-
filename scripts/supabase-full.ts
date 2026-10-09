@@ -15,7 +15,7 @@ try{
   if(!process.argv[3])throw Error('dry-run にExcelパスを指定してください');
   requireLocalWorkbookPath(process.argv[3]);
   const dir=path.resolve('.data/full-dry-run',randomUUID());const report=await dryRun(path.resolve(process.argv[3]),dir,true,{trustedLocalFullWorkbook:true});
-  console.log(JSON.stringify({report:path.join(dir,'report.json'),decision:report.decision,recognizedSheets:report.recognizedSheets,missingSheets:report.missingSheets,mappingIssues:report.mappingIssues,counts:report.counts,durationMs:report.durationMs,recommendedBatchSize:report.recommendedBatchSize,estimatedBatches:report.estimatedBatches,networkUsed:false},null,2));if(report.decision!=='A')process.exitCode=2;
+  console.log(JSON.stringify({report:path.join(dir,'report.json'),decision:report.decision,recognizedSheets:report.recognizedSheets,missingSheets:report.missingSheets,mappingIssues:report.mappingIssues,mappingIssueDetails:report.mappingIssueDetails,counts:report.counts,durationMs:report.durationMs,recommendedBatchSize:report.recommendedBatchSize,estimatedBatches:report.estimatedBatches,networkUsed:false},null,2));if(report.decision!=='A')process.exitCode=2;
  }else if(action==='prepare'){
   if(!process.argv[3]||!process.argv[4])throw Error('prepare Excelパス report.jsonパス');
   try{await fs.access(sessionFile);throw Error('既存全国セッションがあります。statusで確認してください');}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw e;}
