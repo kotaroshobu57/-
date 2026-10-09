@@ -1,3 +1,5 @@
+import {stat} from 'node:fs/promises';
+import {TRUSTED_LOCAL_EXPANDED_BYTES,requireLocalWorkbookPath,type WorkbookOptions} from './workbook-options';
 import {confirmedMapping} from './mapping-registry';
 import {readWorkbook} from './workbook-reader';
 import {classifyDate} from './date-classification';
@@ -14,23 +16,25 @@ export const MAX_UPLOAD_BYTES=100*1024*1024;
 export const MAX_ROWS=200000;
 const aliases:Record<ColumnField,string[]>={company_name:['会社名','企業名','社名','法人名','店舗名','店名','事業所名','名称'],phone:['電話番号','電話','tel','代表電話','固定電話'],mobile_phone:['携帯番号','携帯電話','携帯','mobile'],address:['所在地','住所','会社住所'],prefecture:['都道府県','県','エリア'],website_url:['hp','ホームページ','website','url','hpurl'],instagram_url:['instagram','インスタ','instagramurl'],status:['営業状況','営業ステータス','ステータス','コール','架電結果','営業結果','status','状況'],memo:['メモ','備考','営業メモ','コールメモ','コメント'],last_call_date:['最終架電日','最終コール日','架電日','コール日','日付','営業日']};
 function headerKey(v:string){return v.normalize('NFKC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu,'');}
-export async function validateWorkbook(file:string) {
+export async function validateWorkbook(file:string,options:WorkbookOptions={}) {
+ requireLocalWorkbookPath(file);const info=await stat(file);if(!info.isFile())throw Error('Excelは通常のローカルファイルが必要です');if(!options.trustedLocalFullWorkbook&&info.size>MAX_UPLOAD_BYTES)throw Error('Excelファイルが100MBを超えています');
  const zip=await unzipper.Open.file(file);if(zip.files.length>2000)throw new Error('Excelの内部ファイル数が上限を超えています');
  let size=0;for(const entry of zip.files){size+=entry.uncompressedSize;if(entry.path==='xl/sharedStrings.xml'&&entry.uncompressedSize>64*1024*1024)throw new Error('共有文字列が64MBを超えています。都道府県単位に分けてください');}
- if(size>256*1024*1024)throw new Error('Excelの展開サイズが256MBを超えています。都道府県単位に分けてください');
+ if(size>(options.trustedLocalFullWorkbook?TRUSTED_LOCAL_EXPANDED_BYTES:256*1024*1024))throw new Error(options.trustedLocalFullWorkbook?'全国Excelの展開サイズが2GBを超えています。安全上処理できません':'Excelの展開サイズが256MBを超えています。都道府県単位に分けてください');
  if(!zip.files.some(f=>f.path==='xl/workbook.xml'))throw new Error('有効な .xlsx ファイルではありません');
  if(zip.files.some(f=>/vbaProject\.bin$/i.test(f.path)))throw new Error('マクロ付きファイルは対象外です');
 }
 export async function hashFile(file:string) {const hash=createHash('sha256');for await(const chunk of createReadStream(file))hash.update(chunk);return hash.digest('hex');}
-export async function* workbookRows(file:string) { await validateWorkbook(file); yield* readWorkbook(file); }
+export async function* workbookRows(file:string,options:WorkbookOptions={}) { await validateWorkbook(file,options); yield* readWorkbook(file,options); }
 export function guessColumns(headers:string[]) {
  const result:Partial<Record<ColumnField,number>>={};
  for(const field of COLUMN_FIELDS){const index=headers.findIndex(h=>aliases[field].includes(headerKey(h)));if(index>=0)result[field]=index+1;}
  return result;
 }
-export async function inspectWorkbook(file:string):Promise<SheetMapping[]> {
- await validateWorkbook(file);const manifest=await workbookManifest(file);const positions=new WeakMap<string[],number>();const grouped=new Map<string,string[][]>(manifest.sheets.map(s=>[s.name,[]]));
- for await(const r of workbookRows(file)){grouped.get(r.sheet)!.push(r.cells);positions.set(r.cells,r.row);}
+export async function inspectWorkbook(file:string,options:WorkbookOptions={}):Promise<SheetMapping[]> {
+ await validateWorkbook(file,options);const manifest=await workbookManifest(file);const positions=new WeakMap<string[],number>();const grouped=new Map<string,string[][]>(manifest.sheets.map(s=>[s.name,[]]));
+ const statistics=new Map(manifest.sheets.map(s=>[s.name,{rowCount:0,width:0}]));
+ for await(const r of workbookRows(file,options)){const info=statistics.get(r.sheet)!;info.rowCount++;info.width=Math.max(info.width,r.cells.length);if(r.row<=100){grouped.get(r.sheet)!.push(r.cells);positions.set(r.cells,r.row);}}
  const result=manifest.sheets.map(({name})=>{
  const rows=grouped.get(name)!,width=rows.reduce((max,r)=>Math.max(max,r.length),0);const columns:SheetMapping['columns']={};const warnings:string[]=[];let headers:string[]=[];let headerRow=0;
  for(const row of rows){const company=row.findIndex(v=>/^(店名もしくは法人名|会社名|企業名|法人名)$/.test(v.trim()));if(company>=0&&row.some(v=>v.trim()==='電話番号')){headers=row;headerRow=positions.get(row)!;Object.assign(columns,guessColumns(row));columns.company_name=company+1;row.forEach((v,i)=>{if(v.trim()==='結果')columns.status=i+1;if(/^詳細/.test(v))columns.memo=i+1;if(/^最終コール日/.test(v))columns.last_call_date=i+1;});}}
@@ -50,7 +54,7 @@ export async function inspectWorkbook(file:string):Promise<SheetMapping[]> {
  const known=Boolean(headers.length&&columns.company_name&&columns.phone&&columns.address);if(!known)warnings.push('ヘッダーなし／低信頼列構成：手動確認必須');
  const historyColumns=[...new Set([...headers.flatMap((v,i)=>/詳細|履歴|メモ|備考/.test(v)?[i+1]:[]),...(columns.memo?[columns.memo]:[])])];
  const confidence=known&&!warnings.length?1:0.4;
- return {sheet:name,enabled:confidence>=0.9,headerRow:known&&!rows.slice(0,headerRow-1).some(r=>normalizePhones(r[(columns.phone??0)-1]??'').length)?headerRow:0,columns,historyColumns,prefecture:detectPrefecture(name),headers,samples:rows.slice(0,3),rowCount:rows.length,columnCount:width,warnings,confidence,needs_review:confidence<0.9};
+ return {sheet:name,enabled:confidence>=0.9,headerRow:known&&!rows.slice(0,headerRow-1).some(r=>normalizePhones(r[(columns.phone??0)-1]??'').length)?headerRow:0,columns,historyColumns,prefecture:detectPrefecture(name),headers,samples:rows.slice(0,3),rowCount:statistics.get(name)!.rowCount,columnCount:statistics.get(name)!.width,warnings,confidence,needs_review:confidence<0.9};
  });
  for(const m of result)if(result.some(o=>JSON.stringify(o.columns)!==JSON.stringify(m.columns)))m.warnings.push('他シートと列構成が異なります。個別に確認してください。');
  return result.map(m=>confirmedMapping(m,(grouped.get(m.sheet)??[]).map(cells=>({row:positions.get(cells)!,cells}))));

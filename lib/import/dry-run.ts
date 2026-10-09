@@ -5,6 +5,7 @@ import {hashFile,inspectWorkbook,rowHash,workbookRows} from './excel';
 import {importEntries} from './entries';
 import {PREFECTURES,detectPrefecture} from '../normalize';
 import type {ImportRow} from './types';
+import type {WorkbookOptions} from './workbook-options';
 export const newAuditCounts=()=>({nonempty:0,company:0,metadata:0,eligible:0,excluded:0,salesBan:0,callBan:0,won:0,closed:0,pending:0,exactDuplicate:0,duplicateCandidate:0,noPhone:0,unknownPhone:0,missingCompany:0,corruption:0,otherNeedsReview:0,errors:0,predictedNew:0});
 type Counts=ReturnType<typeof newAuditCounts>;
 function grams(s:string){const out=new Set<string>();for(const word of s.match(/[\p{L}\p{N}]+/gu)??[]){const text=Array.from('  '+word+' ');for(let i=0;i<text.length-2;i++)out.add(text.slice(i,i+3).join(''));}return out;}
@@ -26,17 +27,17 @@ export class DuplicateForecast {
   for(const p of row.normalized_phones)this.put(this.phones,p,id);this.put(this.names,row.normalized_company_name,id);for(const term of g)this.put(this.terms,term,id);return 'new';
  }
 }
-export async function dryRun(file:string,directory:string,require47=true){
+export async function dryRun(file:string,directory:string,require47=true,options:WorkbookOptions={}){
  const started=Date.now();await fs.mkdir(directory,{recursive:true});const lock=await fs.open(path.join(directory,'audit.lock'),'wx');
  const streams=await Promise.all(['rows','metadata','errors','review','duplicates'].map(name=>fs.open(path.join(directory,name+'.jsonl'),'w')));
  try{
- const fileHash=await hashFile(file),mappings=await inspectWorkbook(file);const missing=PREFECTURES.filter(p=>!mappings.some(m=>detectPrefecture(m.sheet)===p));
+ const fileHash=await hashFile(file),mappings=await inspectWorkbook(file,options);const missing=PREFECTURES.filter(p=>!mappings.some(m=>detectPrefecture(m.sheet)===p));
  const mappingIssues=mappings.filter(m=>m.mappingSource!=='confirmed-registry'||m.needs_review||!m.enabled).map(m=>m.sheet);
  const counts=newAuditCounts(),sheets=Object.fromEntries(mappings.map(m=>[m.sheet,newAuditCounts()]));const predictor=new DuplicateForecast();
  await fs.writeFile(path.join(directory,'mappings.json'),JSON.stringify(mappings,null,2));
  const blocked=(require47&&(mappings.length!==47||missing.length>0))||mappingIssues.length>0;
- if(blocked)for await(const row of workbookRows(file)){counts.nonempty++;sheets[row.sheet].nonempty++;}
- if(!blocked)for await(const entry of importEntries(file,mappings,path.basename(file),fileHash)){
+ if(blocked)for await(const row of workbookRows(file,options)){counts.nonempty++;sheets[row.sheet].nonempty++;}
+ if(!blocked)for await(const entry of importEntries(file,mappings,path.basename(file),fileHash,options)){
   const sheet=entry.kind==='company'?entry.row.source_sheet:entry.kind==='metadata'?entry.metadata.source_sheet:entry.source_sheet;const local=sheets[sheet];const add=(key:keyof Counts)=>{counts[key]++;local[key]++;};add('nonempty');
   if(entry.kind==='metadata'){
    add('metadata');await streams[1].write(JSON.stringify(entry.metadata)+'\n');
@@ -53,7 +54,7 @@ export async function dryRun(file:string,directory:string,require47=true){
  }
  const unchanged=await hashFile(file)===fileHash;if(!unchanged)throw Error('元Excelが解析中に変更されました');
  const durationMs=Date.now()-started;const decision=blocked||counts.errors?'C':counts.pending||counts.duplicateCandidate?'B':'A';
- const report={version:1,mode:'offline-full-dry-run',sourceFile:path.basename(file),fileHash,reader:'shared-workbook-reader',recognizedSheets:mappings.length,missingSheets:missing,mappingIssues,decision,blocked,counts,sheets,mappings,durationMs,originalUnchanged:unchanged,recommendedBatchSize:50,estimatedBatches:Math.ceil((counts.company+counts.errors)/50),prediction:{newCompanies:counts.predictedNew,duplicateCandidates:counts.duplicateCandidate,excludedCompanyRows:counts.excluded,reviewRows:counts.pending,errors:counts.errors,dbWriteTime:'未測定・推測のみ。Mac解析時間からDB通信/RPC時間は推定できません。100件実測のバッチ時間×推定バッチ数を目安にします。'},limitations:['DB未接続。既存Supabase会社との一致を含まないファイル内予測です。','重複予測は既存SQLの電話→会社名/所在地→類似度優先順位に基づく近似です。pg_trgmと履歴統合の最終結果は実DBで異なる可能性があります。','集計は元会社行単位。複数の除外/異常分類は重複し、登録後の一意会社数とは異なります。','先頭100行以降の列構造変更は目視レビューが必要です。']};
+ const report={version:1,mode:'offline-full-dry-run',sourceFile:path.basename(file),fileHash,reader:'shared-workbook-reader',trustedLocalFullWorkbook:options.trustedLocalFullWorkbook===true,memory:{peakRssKB:process.resourceUsage().maxRSS,heapUsedBytes:process.memoryUsage().heapUsed},recognizedSheets:mappings.length,missingSheets:missing,mappingIssues,decision,blocked,counts,sheets,mappings,durationMs,originalUnchanged:unchanged,recommendedBatchSize:50,estimatedBatches:Math.ceil((counts.company+counts.errors)/50),prediction:{newCompanies:counts.predictedNew,duplicateCandidates:counts.duplicateCandidate,excludedCompanyRows:counts.excluded,reviewRows:counts.pending,errors:counts.errors,dbWriteTime:'未測定・推測のみ。Mac解析時間からDB通信/RPC時間は推定できません。100件実測のバッチ時間×推定バッチ数を目安にします。'},limitations:['DB未接続。既存Supabase会社との一致を含まないファイル内予測です。','重複予測は既存SQLの電話→会社名/所在地→類似度優先順位に基づく近似です。pg_trgmと履歴統合の最終結果は実DBで異なる可能性があります。','集計は元会社行単位。複数の除外/異常分類は重複し、登録後の一意会社数とは異なります。','先頭100行以降の列構造変更は目視レビューが必要です。']};
  await fs.writeFile(path.join(directory,'report.json'),JSON.stringify(report,null,2));return report;
  }finally{await Promise.all(streams.map(s=>s.close()));await lock.close();await fs.unlink(path.join(directory,'audit.lock'));}
 }

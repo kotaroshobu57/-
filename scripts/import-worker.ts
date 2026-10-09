@@ -9,6 +9,7 @@ import { IMPORT_ROOT,listJobs,readJob,writeJob,jobDirectory } from '../lib/impor
 import { inspectWorkbook,workbookRows,parseImportRow,rowHash,hashFile } from '../lib/import/excel';
 import type { ImportJob,ImportOutcome } from '../lib/import/types';
 nextEnv.loadEnvConfig(process.cwd(),true);
+if(process.argv.includes('--full')&&(!process.argv.includes('--job')||!process.argv.includes('--expected')))throw Error('全国モードは専用CLIからjob IDと予定件数を指定してください');
 const batchSize=Number(process.env.IMPORT_BATCH_SIZE??200);
 if(!Number.isInteger(batchSize)||batchSize<1||batchSize>250)throw new Error('IMPORT_BATCH_SIZE は1〜250');
 let stopping=false;
@@ -57,7 +58,7 @@ async function processJob(job:ImportJob) {
   const mapping=new Map(job.mappings.filter(m=>m.enabled).map(m=>[m.sheet,m]));
   const pending:Record<string,unknown>[]=[];const metadata:Record<string,unknown>[]=[];let seen=0;
   const flushMetadata=async()=>{if(!metadata.length)return;const {error}=await supabaseClient().from('import_metadata').upsert(metadata.splice(0),{onConflict:'file_hash,source_sheet,source_row'});if(error)throw new Error('取込メタデータの保存失敗');};
-  for await(const entry of importEntries(file,job.mappings,job.sourceFile,job.fileHash)){
+  for await(const entry of importEntries(file,job.mappings,job.sourceFile,job.fileHash,process.argv.includes('--full')?{trustedLocalFullWorkbook:true}:{})){
    if(stopping)return;
    if(entry.kind==='metadata'){
     const {anomalies,needs_review,...source}=entry.metadata;metadata.push({...source,raw_cells:anomalies?.length?[...source.raw_cells,{needs_review,anomalies}]:source.raw_cells});if(metadata.length>=batchSize)await flushMetadata();continue;

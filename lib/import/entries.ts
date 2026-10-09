@@ -1,11 +1,12 @@
 import {workbookRows,parseImportRow} from './excel';
 import {normalizeCompanyName,normalizePhones,detectPrefecture} from '../normalize';
 import type {SheetMapping,ImportRow} from './types';
+import type {WorkbookOptions} from './workbook-options';
 export interface ImportMetadata {source_file:string;file_hash:string;source_sheet:string;source_row:number;kind:'ban_start'|'ban_end'|'header'|'annotation';raw_cells:string[];needs_review?:boolean;anomalies?:Array<{raw_value:string;sheet:string;cell:string;source_row:number;anomaly_type:string;needs_review:boolean}>;}
 export type ImportEntry={kind:'company';row:ImportRow}|{kind:'metadata';metadata:ImportMetadata}|{kind:'error';source_sheet:string;source_row:number;message:string;raw_cells:string[]};
-export async function* importEntries(file:string,mappings:SheetMapping[],sourceFile:string,fileHash:string):AsyncGenerator<ImportEntry>{
+export async function* importEntries(file:string,mappings:SheetMapping[],sourceFile:string,fileHash:string,options:WorkbookOptions={}):AsyncGenerator<ImportEntry>{
  const states=new Map<string,{bans:ImportMetadata[];headers:ImportMetadata[]}>();
- for await(const source of workbookRows(file)){
+ for await(const source of workbookRows(file,options)){
   const mapping=mappings.find(m=>m.sheet===source.sheet&&m.enabled);if(!mapping)continue;
   let state=states.get(source.sheet);if(!state){state={bans:[],headers:[]};states.set(source.sheet,state);}
   const get=(n?:number)=>source.cells[(n??0)-1]??'';const name=get(mapping.columns.company_name).trim();
