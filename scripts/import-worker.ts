@@ -58,6 +58,7 @@ async function processJob(job:ImportJob) {
   const pending:Record<string,unknown>[]=[];const metadata:Record<string,unknown>[]=[];let seen=0;
   const flushMetadata=async()=>{if(!metadata.length)return;const {error}=await supabaseClient().from('import_metadata').upsert(metadata.splice(0),{onConflict:'file_hash,source_sheet,source_row'});if(error)throw new Error('取込メタデータの保存失敗');};
   for await(const entry of importEntries(file,job.mappings,job.sourceFile,job.fileHash)){
+   if(stopping)return;
    if(entry.kind==='metadata'){
     const {anomalies,needs_review,...source}=entry.metadata;metadata.push({...source,raw_cells:anomalies?.length?[...source.raw_cells,{needs_review,anomalies}]:source.raw_cells});if(metadata.length>=batchSize)await flushMetadata();continue;
    }
@@ -68,7 +69,10 @@ async function processJob(job:ImportJob) {
    if(pending.length>=batchSize){await flushMetadata();await batch(job,pending.splice(0));if(stopping)return;}
   }
   await flushMetadata();
+  if(stopping)return;
   if(pending.length)await batch(job,pending);
+  if(stopping)return;
+  if(process.argv.includes('--full')){const expected=Number(process.argv[process.argv.indexOf('--expected')+1]);if(!Number.isInteger(expected)||expected<=0||job.processed!==expected)throw new Error('全国Dry Run件数と処理件数が一致しません');}
   if(seen<job.processed)throw new Error('処理位置とExcel行数が一致しません');
   job.durationMs=Date.now()-Date.parse(job.startedAt);await reports(job);job.status='completed';await persistRun(job);await writeJob(job);
  }catch(e){job.status='failed';job.error=errorText(e);job.durationMs=job.startedAt?Date.now()-Date.parse(job.startedAt):0;await writeJob(job);if(job.runId){try{await persistRun(job);await reports(job);}catch{console.error('DBへの失敗記録・結果ファイル保存は未完了です');}}console.error(JSON.stringify({job:job.id,error:job.error}));}
@@ -79,5 +83,5 @@ try{await fs.mkdir(lock);}catch(e){if((e as NodeJS.ErrnoException).code!=='EEXIS
 await fs.writeFile(path.join(lock,'pid'),String(process.pid));
 const heartbeat=async()=>{await fs.writeFile(path.join(IMPORT_ROOT,'worker.json'),JSON.stringify({at:Date.now(),pid:process.pid}));};await heartbeat();
 const timer=setInterval(()=>{heartbeat().catch(()=>{});},5000);
-try{console.log('取込ワーカー起動（キーは出力しません）');do{const jobs=await listJobs();const selected=process.argv.includes('--job')?process.argv[process.argv.indexOf('--job')+1]:undefined;if(process.argv.includes('--job')&&!selected)throw new Error('--job に取込IDを指定してください');const next=jobs.find(j=>(!selected||j.id===selected)&&['inspecting','queued','running'].includes(j.status));if(next&&process.argv.includes('--max-100')&&next.limit!==100)throw new Error('安全上限：limit=100のジョブだけ実行できます');if(next)await processJob(await readJob(next.id));else if(process.argv.includes('--once'))break;else await pause(1000);}while(!stopping);
+try{console.log('取込ワーカー起動（キーは出力しません）');do{const jobs=await listJobs();const selected=process.argv.includes('--job')?process.argv[process.argv.indexOf('--job')+1]:undefined;if(process.argv.includes('--job')&&!selected)throw new Error('--job に取込IDを指定してください');const next=jobs.find(j=>(!selected||j.id===selected)&&['inspecting','queued','running'].includes(j.status));if(next&&process.argv.includes('--max-100')&&next.limit!==100)throw new Error('安全上限：limit=100のジョブだけ実行できます');if(next&&process.argv.includes('--full')&&(next.limit!==0||!process.argv.includes('--expected')||!Number.isInteger(Number(process.argv[process.argv.indexOf('--expected')+1]))||Number(process.argv[process.argv.indexOf('--expected')+1])<=0))throw new Error('全国ジョブはlimit=0とDry Run対象件数が必要です');if(next)await processJob(await readJob(next.id));else if(process.argv.includes('--once'))break;else await pause(1000);}while(!stopping);
 }finally{clearInterval(timer);await fs.rm(lock,{recursive:true,force:true});await fs.rm(path.join(IMPORT_ROOT,'worker.json'),{force:true});}

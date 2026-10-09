@@ -32,7 +32,7 @@ export async function inspectWorkbook(file:string):Promise<SheetMapping[]> {
  await validateWorkbook(file);const manifest=await workbookManifest(file);const positions=new WeakMap<string[],number>();const grouped=new Map<string,string[][]>(manifest.sheets.map(s=>[s.name,[]]));
  for await(const r of workbookRows(file)){grouped.get(r.sheet)!.push(r.cells);positions.set(r.cells,r.row);}
  const result=manifest.sheets.map(({name})=>{
- const rows=grouped.get(name)!,width=Math.max(0,...rows.map(r=>r.length));const columns:SheetMapping['columns']={};const warnings:string[]=[];let headers:string[]=[];let headerRow=0;
+ const rows=grouped.get(name)!,width=rows.reduce((max,r)=>Math.max(max,r.length),0);const columns:SheetMapping['columns']={};const warnings:string[]=[];let headers:string[]=[];let headerRow=0;
  for(const row of rows){const company=row.findIndex(v=>/^(店名もしくは法人名|会社名|企業名|法人名)$/.test(v.trim()));if(company>=0&&row.some(v=>v.trim()==='電話番号')){headers=row;headerRow=positions.get(row)!;Object.assign(columns,guessColumns(row));columns.company_name=company+1;row.forEach((v,i)=>{if(v.trim()==='結果')columns.status=i+1;if(/^詳細/.test(v))columns.memo=i+1;if(/^最終コール日/.test(v))columns.last_call_date=i+1;});}}
  const frequency=(test:(v:string)=>boolean)=>Array.from({length:width},(_,i)=>rows.filter(r=>test(r[i]??'')).length);
  const choose=(scores:number[])=>{const best=Math.max(0,...scores),idx=scores.indexOf(best);return best>=3&&scores.filter(v=>v===best).length===1?idx+1:undefined;};
