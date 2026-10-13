@@ -10,21 +10,24 @@ export const newAuditCounts=()=>({nonempty:0,company:0,metadata:0,eligible:0,exc
 type Counts=ReturnType<typeof newAuditCounts>;
 function grams(s:string){const out=new Set<string>();for(const word of s.match(/[\p{L}\p{N}]+/gu)??[]){const text=Array.from('  '+word+' ');for(let i=0;i<text.length-2;i++)out.add(text.slice(i,i+3).join(''));}return out;}
 // File-only prediction. Indexes avoid scanning all preceding companies per row.
+export type ForecastCompany=Pick<ImportRow,'normalized_company_name'|'normalized_phones'|'prefecture'|'normalized_address'|'company_name'|'phone'|'address'|'source_sheet'|'source_row'>;
 export class DuplicateForecast {
- private rows:Array<Pick<ImportRow,'normalized_company_name'|'normalized_phones'|'prefecture'|'normalized_address'>>=[];
+ public evidence:{reason:string;matches:ForecastCompany[];matchCount:number;similarity?:number}={reason:'new',matches:[],matchCount:0};
+ private rows:ForecastCompany[]=[];
+ private outcome(kind:'new'|'exact'|'candidate',reason:string,ids:number[]=[],similarity?:number){this.evidence={reason,matches:ids.slice(0,10).map(id=>this.rows[id]),matchCount:ids.length,similarity};return kind;}
  private phones=new Map<string,Set<number>>();private names=new Map<string,Set<number>>();private terms=new Map<string,Set<number>>();
  private put(map:Map<string,Set<number>>,key:string,id:number){if(!key)return;let ids=map.get(key);if(!ids){ids=new Set();map.set(key,ids);}ids.add(id);}
  accept(row:ImportRow):'new'|'exact'|'candidate'{
   const phoneMatches=new Set<number>();for(const p of row.normalized_phones)for(const id of this.phones.get(p)??[])phoneMatches.add(id);
-  if(phoneMatches.size)return phoneMatches.size===1?'exact':'candidate';
+  if(phoneMatches.size)return this.outcome(phoneMatches.size===1?'exact':'candidate',phoneMatches.size===1?'same_phone':'multiple_phone_matches',[...phoneMatches]);
   const same=[...(this.names.get(row.normalized_company_name)??[])];
   const strong=same.filter(id=>{const r=this.rows[id];return row.prefecture!==''&&r.prefecture===row.prefecture||row.normalized_address!==''&&r.normalized_address===row.normalized_address;});
-  if(strong.length){if(strong.length>1)return 'candidate';return row.normalized_phones.length&&this.rows[strong[0]].normalized_phones.length?'candidate':'exact';}
-  if(same.length)return 'candidate';
+  if(strong.length){if(strong.length>1)return this.outcome('candidate','multiple_name_location',strong);return this.outcome(row.normalized_phones.length&&this.rows[strong[0]].normalized_phones.length?'candidate':'exact','same_name_location',strong);}
+  if(same.length)return this.outcome('candidate','same_normalized_name',same);
   const g=grams(row.normalized_company_name),hits=new Map<number,number>();for(const term of g)for(const id of this.terms.get(term)??[])hits.set(id,(hits.get(id)??0)+1);
-  for(const [id,common] of hits){const other=grams(this.rows[id].normalized_company_name);if(common/(g.size+other.size-common||1)>=.85)return 'candidate';}
-  const id=this.rows.length;this.rows.push({normalized_company_name:row.normalized_company_name,normalized_phones:row.normalized_phones,prefecture:row.prefecture,normalized_address:row.normalized_address});
-  for(const p of row.normalized_phones)this.put(this.phones,p,id);this.put(this.names,row.normalized_company_name,id);for(const term of g)this.put(this.terms,term,id);return 'new';
+  for(const [id,common] of hits){const other=grams(this.rows[id].normalized_company_name);const similarity=common/(g.size+other.size-common||1);if(similarity>=.85)return this.outcome('candidate','similar_name',[id],similarity);}
+  const id=this.rows.length;this.rows.push({normalized_company_name:row.normalized_company_name,normalized_phones:row.normalized_phones,prefecture:row.prefecture,normalized_address:row.normalized_address,company_name:row.company_name,phone:row.phone,address:row.address,source_sheet:row.source_sheet,source_row:row.source_row});
+  for(const p of row.normalized_phones)this.put(this.phones,p,id);this.put(this.names,row.normalized_company_name,id);for(const term of g)this.put(this.terms,term,id);return this.outcome('new','new');
  }
 }
 export async function dryRun(file:string,directory:string,require47=true,options:WorkbookOptions={}){

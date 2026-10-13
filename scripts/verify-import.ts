@@ -100,6 +100,19 @@ try{
  await runWorker();uploadedJob=await (await fetch(base+'/api/imports/'+uploadedId)).json();assert.equal(uploadedJob.status,'completed',uploadedJob.error);assert.equal(uploadedJob.counts.new,0);assert.equal(uploadedJob.counts.read,100);
  const errorReport=await fetch(base+'/api/imports/'+uploadedId+'/files?kind=errors');assert.equal(errorReport.status,200);assert.equal((await errorReport.text()).trim(),'');
  assert.equal(await hashFile(path.join(work,'.data','imports',uploadedId,'original.xlsx')),before);
+ if(process.argv.includes('--diagnose-pending-safety')){
+ const exemplar=await client.from('company_import_records').select('normalized_data').limit(1).single();assert.equal(exemplar.error,null);
+ const safetyRun=randomUUID();await client.from('import_runs').insert({id:safetyRun,source_file:'quality-diagnostic',file_hash:safetyRun,status:'running'});
+ for(const incomingStatus of ['未架電','成約済み']){
+  const phoneNumber=incomingStatus==='未架電'?'0312349981':'0312349982';
+  const original:Record<string,unknown>={...exemplar.data.normalized_data,company_name:'診断'+randomUUID(),normalized_company_name:randomUUID().replaceAll('-',''),normalized_phone:phoneNumber,phone:phoneNumber,normalized_phones:[phoneNumber],file_hash:safetyRun,source_sheet:incomingStatus,source_row:1,row_hash:'diagnostic-1',call_status:'未架電',is_do_not_call:false,is_closed:false,closure_state:'normal',eligible_for_sales:false,import_metadata:{quality_warnings:['電話番号要確認']}};
+  const added:{data:any;error:any}=await client.rpc('import_company_batch',{p_run_id:safetyRun,p_rows:[original]});assert.equal(added.error,null);const id=added.data[0].company_id;assert.ok(id);
+  const first=await client.from('companies').select('eligible_for_sales').eq('id',id).single();assert.equal(first.data!.eligible_for_sales,false);
+  const next={...original,source_row:2,row_hash:'diagnostic-2',call_status:incomingStatus,import_metadata:{quality_warnings:[]},eligible_for_sales:incomingStatus!=='成約済み'};
+  const updated=await client.rpc('import_company_batch',{p_run_id:safetyRun,p_rows:[next]});assert.equal(updated.error,null);
+  const after=await client.from('companies').select('eligible_for_sales,call_status').eq('id',id).single();assert.equal(after.data!.eligible_for_sales,true);assert.equal(after.data!.call_status,'未架電');console.log('REPRODUCED safety risk:',incomingStatus,after.data);
+ }
+ }
  console.log('PASS: アップロードAPI、列確認、実行API、結果API、エラーJSONL、同一オリジン制約、アップロードコピー保持');
  console.log('PASS: DB移行、100件、中断再開、全件、二重登録防止、元Excel/全履歴保持、電話・強一致・類似・曖昧候補、除外、DB検索・ページ分割、スコア、STEP1データ保持');
  // Optional large-workbook parser test; does not write 100,000 rows into a real DB.
